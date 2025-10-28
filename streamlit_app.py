@@ -7,6 +7,8 @@ from folium.plugins import AntPath
 from streamlit_folium import st_folium
 
 from math import radians, sin, cos, sqrt, atan2
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
 from datetime import datetime, timedelta
 import math
 from openai import OpenAI
@@ -82,11 +84,63 @@ thead tr th {
 file_id = "1Zp_2qP8Td1TVMdbY9mlzOHYxIlICmNZL"
 url = f"https://drive.google.com/uc?id={file_id}&export=download"
 
+geolocator = Nominatim(user_agent="dashboard_active_label")
+reverse = RateLimiter(geolocator.reverse, min_delay_seconds=1)
+
+def get_province(lat, lon):
+    try:
+        location = reverse((lat, lon), language="it")
+        if location and "address" in location.raw:
+            address = location.raw["address"]
+            # 🔍 Proviamo diversi campi in ordine di importanza
+            return (
+                address.get("state_district") or
+                address.get("county") or
+                address.get("state") or
+                address.get("region") or
+                address.get("city") or
+                address.get("town") or
+                address.get("village") or
+                address.get("municipality") or
+                address.get("country")
+            )
+    except Exception:
+        return None
+    return None
+
 try:
     # Caricamento del file
     df = pd.read_csv(url, sep=" ", header=None)
     df.columns = ["Operator", "Device", "Reading date", "Reading hour", "Read value", "Effective T", "QR", "Desired T",
-                  "Item ID", "Writing date", "Writing hour", "LAT", "LON", "City"]
+                  "Item ID", "Writing date", "Writing hour", "LAT", "LON"]
+
+    @st.cache_data(show_spinner="Determinazione province in corso...")
+    def get_province_cached(lat, lon):
+        try:
+            location = reverse((lat, lon), language="it")
+            if location and "address" in location.raw:
+                address = location.raw["address"]
+                # 🔍 Proviamo diversi campi in ordine di importanza
+                return (
+                        address.get("state_district") or
+                        address.get("county") or
+                        address.get("state") or
+                        address.get("region") or
+                        address.get("city") or
+                        address.get("town") or
+                        address.get("village") or
+                        address.get("municipality") or
+                        address.get("country")
+                )
+        except Exception:
+            return None
+        return None
+
+    # Applichiamo la funzione solo se LAT e LON sono validi
+    df["Province"] = df.apply(
+        lambda r: get_province_cached(r["LAT"], r["LON"]) if pd.notna(r["LAT"]) and pd.notna(r["LON"]) else None,
+        axis=1
+    )
 
     mappa_prodotti = {
         "B": {"nome": "Banana", "scadenza_giorni": 7},
@@ -150,6 +204,11 @@ try:
     df = assegna_prodotto_e_scadenza(df)
     with st.spinner("⏳ Calcolo colonne aggiuntive in corso..."):
         df = assegna_prodotto_e_scadenza(df)
+        df["Province"] = df.apply(
+            lambda r: get_province_cached(r["LAT"], r["LON"]) if pd.notna(r["LAT"]) and pd.notna(r["LON"]) else None,
+            axis=1
+        )
+
 
     def _expiry_factor_from_days(g, initial_shelf_life):
         if pd.isna(g):
