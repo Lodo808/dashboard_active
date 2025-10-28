@@ -88,11 +88,6 @@ try:
     df.columns = ["Operator", "Device", "Reading date", "Reading hour", "Read value", "Effective T", "QR", "Desired T",
                   "Item ID", "Writing date", "Writing hour", "LAT", "LON", "Province"]
 
-    # Applichiamo la funzione solo se LAT e LON sono validi
-    df["Province"] = df.apply(
-        axis=1
-    )
-
     mappa_prodotti = {
         "B": {"nome": "Banana", "scadenza_giorni": 7},
         "M": {"nome": "Mela", "scadenza_giorni": 10},
@@ -155,10 +150,6 @@ try:
     df = assegna_prodotto_e_scadenza(df)
     with st.spinner("⏳ Calcolo colonne aggiuntive in corso..."):
         df = assegna_prodotto_e_scadenza(df)
-        df["Province"] = df.apply(
-            axis=1
-        )
-
 
     def _expiry_factor_from_days(g, initial_shelf_life):
         if pd.isna(g):
