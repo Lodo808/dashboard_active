@@ -86,7 +86,7 @@ try:
     # Caricamento del file
     df = pd.read_csv(url, sep=" ", header=None)
     df.columns = ["Operator", "Device", "Reading date", "Reading hour", "Read value", "Effective T", "QR", "Desired T",
-                  "Item ID", "Writing date", "Writing hour", "LAT", "LON", "Province"]
+                  "Item ID", "Writing date", "Writing hour", "LAT", "LON", "City"]
 
     mappa_prodotti = {
         "B": {"nome": "Banana", "scadenza_giorni": 7},
