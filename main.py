@@ -51,6 +51,7 @@ def login():
     if not user or not bcrypt.checkpw(password.encode('utf-8'), user.password_hash.encode('utf-8')):
         return jsonify({"error": "Invalid credentials"}), 401
 
+    # 🔥 CREA JWT
     payload = {
         "username": user.username,
         "company_name": user.company_name,
@@ -62,12 +63,11 @@ def login():
 
     return jsonify({
         "status": "Login successful",
-        "token": token,
         "username": user.username,
         "company_name": user.company_name,
-        "operator": user.operator
+        "operator": user.operator,
+        "token": token
     }), 200
-
 
 @app.route("/testdb", methods=["GET"])
 def test_db():
