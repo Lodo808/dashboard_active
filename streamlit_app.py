@@ -187,6 +187,15 @@ df = df.rename(columns={
     "province": "Province",
 })
 
+expected_cols = [
+    "Operator", "Device", "Reading date", "Read value", "Effective T", "QR",
+    "Desired T", "Item ID", "Writing date", "LAT", "LON", "Province"
+]
+
+for col in expected_cols:
+    if col not in df.columns:
+        df[col] = None
+
 # --- Splitta timestamp lettura ---
 df["Reading date"] = pd.to_datetime(df["Reading date"], errors="coerce")
 df["Reading hour"] = df["Reading date"].dt.strftime("%H:%M:%S")
