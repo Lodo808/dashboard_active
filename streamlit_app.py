@@ -9,7 +9,7 @@ from folium.plugins import AntPath
 from streamlit_folium import st_folium
 
 from math import radians, sin, cos, sqrt, atan2
-from datetime import datetime, timedelta
+from datetime import timedelta
 import math
 from openai import OpenAI
 
@@ -91,7 +91,6 @@ thead tr th {
 
 JWT_SECRET = os.getenv("JWT_SECRET")
 
-# Lettura token sicura
 token = st.query_params.get("token")
 if isinstance(token, list):
     token = token[0]
@@ -104,7 +103,6 @@ if not JWT_SECRET:
     st.error("❌ Server error: missing JWT_SECRET env variable")
     st.stop()
 
-# Decodifica JWT
 try:
     decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
 except Exception as e:
@@ -147,20 +145,6 @@ try:
     query = f"SELECT * FROM {table_name} ORDER BY timestamp DESC"
     df = pd.read_sql(query, conn)
 
-    df["Effective T"] = pd.to_numeric(df.get("Effective T"), errors="coerce")
-    df["Desired T"] = pd.to_numeric(df.get("Desired T"), errors="coerce")
-
-    # Se esiste "bluetooth_value" o altre colonne numeriche aggiungile qui
-    if "bluetooth_value" in df.columns:
-        df["bluetooth_value"] = pd.to_numeric(df["bluetooth_value"], errors="coerce")
-
-    # Latitude / Longitude
-    if "LAT" in df.columns:
-        df["LAT"] = pd.to_numeric(df["LAT"], errors="coerce")
-    if "LON" in df.columns:
-        df["LON"] = pd.to_numeric(df["LON"], errors="coerce")
-
-    # Freshness Index (se già presente)
     if "freshness_index" in df.columns:
         df["freshness_index"] = pd.to_numeric(df["freshness_index"], errors="coerce")
 
@@ -169,7 +153,7 @@ except Exception as e:
     st.stop()
 
 # -----------------------------------------------------------
-# NORMALIZZAZIONE COLONNE PER FUNZIONARE CON LA DASHBOARD
+# NORMALIZZAZIONE COLONNE
 # -----------------------------------------------------------
 
 df = df.rename(columns={
@@ -196,15 +180,19 @@ for col in expected_cols:
     if col not in df.columns:
         df[col] = None
 
-# --- Splitta timestamp lettura ---
+df["Effective T"] = pd.to_numeric(df["Effective T"], errors="coerce")
+df["Desired T"] = pd.to_numeric(df["Desired T"], errors="coerce")
+df["Read value"] = pd.to_numeric(df["Read value"], errors="coerce")
+
+df["LAT"] = pd.to_numeric(df["LAT"], errors="coerce")
+df["LON"] = pd.to_numeric(df["LON"], errors="coerce")
+
+# Date come datetime (non stringhe)
 df["Reading date"] = pd.to_datetime(df["Reading date"], errors="coerce")
 df["Reading hour"] = df["Reading date"].dt.strftime("%H:%M:%S")
-df["Reading date"] = df["Reading date"].dt.strftime("%d/%m/%Y")
 
-# --- Splitta timestamp etichetta ---
 df["Writing date"] = pd.to_datetime(df["Writing date"], errors="coerce")
 df["Writing hour"] = df["Writing date"].dt.strftime("%H:%M:%S")
-df["Writing date"] = df["Writing date"].dt.strftime("%d/%m/%Y")
 
 # -----------------------------------------------------------
 # LOGICA PRODOTTI / SCADENZA / FRESCHEZZA
@@ -223,7 +211,7 @@ scadenze_per_prodotto = {v["nome"]: v["scadenza_giorni"] for k, v in mappa_prodo
 
 def assegna_prodotto_e_scadenza(df_in: pd.DataFrame) -> pd.DataFrame:
     df_local = df_in.copy()
-    df_local["Reading date"] = pd.to_datetime(df_local["Reading date"], dayfirst=True, errors="coerce")
+    df_local["Reading date"] = pd.to_datetime(df_local["Reading date"], errors="coerce")
 
     prodotti, scadenze_iniziali, scadenze_residue = [], [], []
     prima_lettura = {}
@@ -260,17 +248,11 @@ def assegna_prodotto_e_scadenza(df_in: pd.DataFrame) -> pd.DataFrame:
             data_scadenza = prima_lettura[qr_val] + timedelta(days=giorni_scadenza)
 
         prodotti.append(nome_prodotto)
-        scadenze_iniziali.append(data_scadenza.date())
+        scadenze_iniziali.append(data_scadenza)
         scadenze_residue.append(scadenza_residua)
 
     df_local["Product"] = prodotti
-    df_local["Expiry date (initial)"] = scadenze_iniziali
-    df_local["Reading date"] = df_local["Reading date"].dt.strftime("%d/%m/%Y")
-    df_local["Expiry date (initial)"] = pd.to_datetime(
-        df_local["Expiry date (initial)"],
-        dayfirst=True,
-        errors="coerce"
-    ).dt.strftime("%d/%m/%Y")
+    df_local["Expiry date (initial)"] = pd.to_datetime(scadenze_iniziali, errors="coerce")
     df_local["Days left"] = scadenze_residue
     return df_local
 
@@ -281,8 +263,9 @@ with st.spinner("⏳ Calcolo colonne aggiuntive in corso..."):
 if "Days left" in df.columns:
     df["Days left"] = pd.to_numeric(df["Days left"], errors="coerce")
 
+
 def _expiry_factor_from_days(g, initial_shelf_life):
-    if pd.isna(g):
+    if g is None or (isinstance(g, float) and math.isnan(g)):
         return 0.0
     if initial_shelf_life == 0:
         return 0.0 if g < 0 else 1.0
@@ -293,27 +276,44 @@ def _expiry_factor_from_days(g, initial_shelf_life):
         return 0.3 + (0.6 - 0.3) * ((g + 7.0) / 7.0)
     elif g >= -14:
         return 0.25 + (0.3 - 0.25) * ((g + 14.0) / 7.0)
-
     return max(0.0, 0.25 * math.exp((g + 14.0) / 14.0))
 
 
-def calcola_indice_freschezza(row):
-    t_eff = row["Effective T"]
-    t_des = row["Desired T"]
+def _is_missing_scalar(v):
+    # Gestione sicura anche se per errore arriva una Series
+    if isinstance(v, pd.Series):
+        return v.isna().all()
+    if v is None:
+        return True
+    try:
+        return isinstance(v, float) and math.isnan(v)
+    except TypeError:
+        return False
 
-    # Se valori mancanti → assegna 0
-    if pd.isna(t_eff) or pd.isna(t_des):
-        return 0
+
+def calcola_indice_freschezza(row):
+    t_eff = row.get("Effective T", None)
+    t_des = row.get("Desired T", None)
+
+    # Se valori mancanti → assegna 0 (mai più errore di ambiguità)
+    if _is_missing_scalar(t_eff) or _is_missing_scalar(t_des):
+        return 0.0
+
+    try:
+        t_eff = float(t_eff)
+        t_des = float(t_des)
+    except (TypeError, ValueError):
+        return 0.0
 
     temp_diff = abs(t_eff - t_des)
     temp_factor = max(0.0, 1.0 - (temp_diff / 10.0))
 
     giorni_residui = row.get("Days left", None)
-    if pd.isna(giorni_residui):
-        giorni_residui = 0
+    if _is_missing_scalar(giorni_residui):
+        giorni_residui = 0.0
 
     nome_prodotto = row.get("Product", "Sconosciuto")
-    initial_shelf_life = scadenze_per_prodotto.get(nome_prodotto, 7)
+    initial_shelf_life = float(scadenze_per_prodotto.get(nome_prodotto, 7))
 
     expiry_factor = _expiry_factor_from_days(giorni_residui, initial_shelf_life)
 
@@ -337,15 +337,22 @@ def calcola_waste_cost(df_in):
     return round(costo_totale, 2)
 
 
-# Calcolo dell'indice di freschezza se non esiste ancora
 if "freshness_index" not in df.columns:
     df["freshness_index"] = df.apply(calcola_indice_freschezza, axis=1)
+else:
+    df["freshness_index"] = pd.to_numeric(df["freshness_index"], errors="coerce")
+    df["freshness_index"] = df["freshness_index"].fillna(
+        df.apply(calcola_indice_freschezza, axis=1)
+    )
 
 tipo = "Car"
 fattori = {"Car": 0.12, "Truck": 0.6, "Refrigerated Truck": 0.9}
 fattore_emissione = fattori[tipo]
 
-# --- Calcolo metriche generali su tutti i dati ---
+# -----------------------------------------------------------
+# METRICHE GENERALI
+# -----------------------------------------------------------
+
 total_shipments = len(df)
 compliant = len(df[df["freshness_index"] >= 50])
 incidenti = len(df[df["freshness_index"] < 50])
@@ -393,7 +400,6 @@ st.markdown("""
     <div class="snapshot-title">🚦 Executive Snapshot</div>
 """, unsafe_allow_html=True)
 
-# --- Layout colonne metriche ---
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("✅ % Compliant Shipments", f"{perc_compliant:.1f}%")
@@ -424,9 +430,9 @@ else:
 
 filtered = filtered.copy()
 
-filtered["Reading date"] = pd.to_datetime(filtered["Reading date"], dayfirst=True, errors="coerce")
-filtered["Expiry date (initial)"] = pd.to_datetime(filtered["Expiry date (initial)"], dayfirst=True, errors="coerce")
-filtered["Writing date"] = pd.to_datetime(filtered["Writing date"], dayfirst=True, errors="coerce")
+filtered["Reading date"] = pd.to_datetime(filtered["Reading date"], errors="coerce")
+filtered["Expiry date (initial)"] = pd.to_datetime(filtered["Expiry date (initial)"], errors="coerce")
+filtered["Writing date"] = pd.to_datetime(filtered["Writing date"], errors="coerce")
 
 colonne_da_mostrare = [
     "Operator", "Reading date", "Read value", "Effective T", "QR",
@@ -441,10 +447,13 @@ if 'df_selection' not in st.session_state:
 
 st.write("Table of recent scans. Click on a row to see the history and map of that QR code.")
 
-filtered_last_scan = filtered.dropna(subset=["Reading date"]) \
-    .sort_values("Reading date") \
-    .groupby("QR") \
+filtered_last_scan = (
+    filtered
+    .dropna(subset=["Reading date"])
+    .sort_values("Reading date")
+    .groupby("QR")
     .tail(1)
+)
 
 df_sorted = filtered_last_scan.sort_values(
     "Reading date", ascending=False
@@ -471,9 +480,9 @@ if new_selection:
     selected_row_index = new_selection[0]
     qr_from_click = df_sorted.iloc[selected_row_index]["QR"]
     st.session_state.selected_qr = qr_from_click
-
 elif not new_selection and old_selection:
     st.session_state.selected_qr = "All"
+
 st.session_state.df_selection = new_selection
 
 st.subheader("📜 Scan history and details")
@@ -492,7 +501,6 @@ selected_qr = st.selectbox(
 if selected_qr != "All":
     map_data = filtered[filtered["QR"] == selected_qr]
 
-    # --- 📜 Storico delle scansioni ---
     storico = map_data.sort_values("Reading date", ascending=True)
 
     st.dataframe(
@@ -520,7 +528,10 @@ else:
     map_data = filtered
     map_zoom = 4
 
-# --- Mappa ---
+# -----------------------------------------------------------
+# MAPPA
+# -----------------------------------------------------------
+
 st.subheader("🗺️ Geolocation of QR Scans")
 
 if not map_data.empty and "LAT" in map_data.columns and "LON" in map_data.columns:
@@ -546,12 +557,15 @@ if not map_data.empty and "LAT" in map_data.columns and "LON" in map_data.column
             return "red"
 
         for _, row in map_data_valid.iterrows():
-            # row["Reading date"] è datetime da "storico" / filtered
+            data_txt = ""
+            if not pd.isna(row["Reading date"]):
+                data_txt = row["Reading date"].strftime('%d/%m/%Y')
+
             tooltip_html = f"""
                     <b>QR:</b> {row['QR']}<br>
                     <b>Prodotto:</b> {row['Product']}<br>
                     <b>Freschezza:</b> {row['freshness_index']}%<br>
-                    <b>Data:</b> {row['Reading date'].strftime('%d/%m/%Y') if isinstance(row['Reading date'], pd.Timestamp) else row['Reading date']}<br>
+                    <b>Data:</b> {data_txt}<br>
                     <b>Ora:</b> {row['Reading hour']}
                 """
 
@@ -605,13 +619,15 @@ if not map_data.empty and "LAT" in map_data.columns and "LON" in map_data.column
             returned_objects=[]
         )
 
-# --- Riepilogo freschezza per QR ---
+# -----------------------------------------------------------
+# RIEPILOGO FRESCHEZZA PER QR
+# -----------------------------------------------------------
+
 st.markdown("---")
 st.subheader("❄️ QR Freshness Summary")
 
-df["Reading date"] = pd.to_datetime(df["Reading date"], dayfirst=True, errors="coerce")
-df["Expiry date (initial)"] = pd.to_datetime(df["Expiry date (initial)"], dayfirst=True, errors="coerce")
-df["Writing date"] = pd.to_datetime(df["Writing date"], dayfirst=True, errors="coerce")
+df["Reading date"] = pd.to_datetime(df["Reading date"], errors="coerce")
+df["Expiry date (initial)"] = pd.to_datetime(df["Expiry date (initial)"], errors="coerce")
 
 first_scans = df.loc[df.groupby("QR")["Reading date"].idxmin()][["QR", "Reading date"]]
 first_scans = first_scans.rename(columns={"Reading date": "First Scan Date"})
@@ -702,10 +718,10 @@ df_distance = pd.DataFrame(distances)
 st.markdown("---")
 st.subheader("🌱 CO₂ Emissions by QR (based on travelled distance)")
 
-col1, col2, col3 = st.columns([1.5, 1.5, 1])
+c1, c2, c3 = st.columns([1.5, 1.5, 1])
 
 operatori = sorted(df_distance["Operator"].dropna().unique().tolist())
-selected_operator = col1.multiselect("👷 Operator", operatori, help="Select one or more operators")
+selected_operator = c1.multiselect("👷 Operator", operatori, help="Select one or more operators")
 if selected_operator:
     qrs_filtrabili = sorted([
         qr
@@ -716,17 +732,17 @@ if selected_operator:
 else:
     qrs_filtrabili = sorted(df["QR"].dropna().unique().tolist())
 
-selected_qr_filter = col2.multiselect("🔢 QR Code", qrs_filtrabili, help="Filter by QR code")
+selected_qr_filter = c2.multiselect("🔢 QR Code", qrs_filtrabili, help="Filter by QR code")
 
 min_dist, max_dist = float(df_distance["Distance_km"].min()), float(df_distance["Distance_km"].max())
 
 if min_dist < max_dist:
-    selected_distance = col3.slider("🚚 Distance (km)", min_dist, max_dist, (min_dist, max_dist))
+    selected_distance = c3.slider("🚚 Distance (km)", min_dist, max_dist, (min_dist, max_dist))
 else:
-    col3.info("Filtro distanza non disponibile (dati insufficienti).")
+    c3.info("Filtro distanza non disponibile (dati insufficienti).")
     selected_distance = (min_dist, max_dist)
 
-tipo = st.selectbox("Transport type", ["Car", "Truck", "Refrigerated Truck"])
+tipo = st.selectbox("Transport type", ["Car", "Truck", "Refrigerated Truck"], index=0)
 fattori = {"Car": 0.12, "Truck": 0.6, "Refrigerated Truck": 0.9}
 fattore_emissione = fattori[tipo]
 
@@ -790,10 +806,10 @@ with ai_container:
         if "report_lang" not in st.session_state:
             st.session_state.report_lang = None
 
-        col1b, col2b, col3b = st.columns([1.5, 1.5, 3])
-        with col1b:
+        c1b, c2b, _ = st.columns([1.5, 1.5, 3])
+        with c1b:
             genera_report_it = st.button("📊 Genera Report (IT)")
-        with col2b:
+        with c2b:
             genera_report_en = st.button("📊 Generate Report (EN)")
 
         summary = {
@@ -866,7 +882,6 @@ with ai_container:
                 st.session_state.report_lang = lang_to_generate
 
         if st.session_state.report_ai:
-
             T = prompts.get(st.session_state.report_lang, prompts['en'])
 
             st.success(T['success'])
