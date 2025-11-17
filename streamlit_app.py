@@ -91,11 +91,20 @@ thead tr th {
 
 JWT_SECRET = os.getenv("JWT_SECRET")
 
-token = st.query_params.get("token", [None])[0]
+# Lettura token sicura
+token = st.query_params.get("token")
+if isinstance(token, list):
+    token = token[0]
+
 if not token:
     st.error("❌ Access denied: missing ?token=")
     st.stop()
 
+if not JWT_SECRET:
+    st.error("❌ Server error: missing JWT_SECRET env variable")
+    st.stop()
+
+# Decodifica JWT
 try:
     decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
 except Exception as e:
