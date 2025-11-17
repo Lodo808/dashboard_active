@@ -147,6 +147,23 @@ try:
     query = f"SELECT * FROM {table_name} ORDER BY timestamp DESC"
     df = pd.read_sql(query, conn)
 
+    df["Effective T"] = pd.to_numeric(df.get("Effective T"), errors="coerce")
+    df["Desired T"] = pd.to_numeric(df.get("Desired T"), errors="coerce")
+
+    # Se esiste "bluetooth_value" o altre colonne numeriche aggiungile qui
+    if "bluetooth_value" in df.columns:
+        df["bluetooth_value"] = pd.to_numeric(df["bluetooth_value"], errors="coerce")
+
+    # Latitude / Longitude
+    if "LAT" in df.columns:
+        df["LAT"] = pd.to_numeric(df["LAT"], errors="coerce")
+    if "LON" in df.columns:
+        df["LON"] = pd.to_numeric(df["LON"], errors="coerce")
+
+    # Freshness Index (se già presente)
+    if "freshness_index" in df.columns:
+        df["freshness_index"] = pd.to_numeric(df["freshness_index"], errors="coerce")
+
 except Exception as e:
     st.error(f"❌ Errore nel caricamento dati da Cloud SQL: {e}")
     st.stop()
@@ -252,6 +269,8 @@ def assegna_prodotto_e_scadenza(df_in: pd.DataFrame) -> pd.DataFrame:
 with st.spinner("⏳ Calcolo colonne aggiuntive in corso..."):
     df = assegna_prodotto_e_scadenza(df)
 
+if "Days left" in df.columns:
+    df["Days left"] = pd.to_numeric(df["Days left"], errors="coerce")
 
 def _expiry_factor_from_days(g, initial_shelf_life):
     if pd.isna(g):
@@ -270,13 +289,27 @@ def _expiry_factor_from_days(g, initial_shelf_life):
 
 
 def calcola_indice_freschezza(row):
-    temp_diff = abs(row["Effective T"] - row["Desired T"])
+    t_eff = row["Effective T"]
+    t_des = row["Desired T"]
+
+    # Se valori mancanti → assegna 0
+    if pd.isna(t_eff) or pd.isna(t_des):
+        return 0
+
+    temp_diff = abs(t_eff - t_des)
     temp_factor = max(0.0, 1.0 - (temp_diff / 10.0))
-    giorni_residui = row.get("Days left", 0)
+
+    giorni_residui = row.get("Days left", None)
+    if pd.isna(giorni_residui):
+        giorni_residui = 0
+
     nome_prodotto = row.get("Product", "Sconosciuto")
     initial_shelf_life = scadenze_per_prodotto.get(nome_prodotto, 7)
+
     expiry_factor = _expiry_factor_from_days(giorni_residui, initial_shelf_life)
+
     combined = (temp_factor ** 0.6) * (expiry_factor ** 1.0)
+
     return round(100.0 * combined, 1)
 
 
