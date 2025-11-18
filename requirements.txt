@@ -1,11 +1,11 @@
 streamlit>=1.36
 pandas==2.2.2
 mysql-connector-python==8.3.0
-pyjwt==2.8.0
+PyJWT==2.8.0
 folium==0.15.1
 streamlit-folium>=0.18
 geopy==2.4.1
 numpy==1.26.4
-openai==1.12.0
+openai>=1.58.1
 python-dotenv==1.0.1
 requests==2.31.0
