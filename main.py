@@ -51,7 +51,6 @@ def login():
     if not user or not bcrypt.checkpw(password.encode('utf-8'), user.password_hash.encode('utf-8')):
         return jsonify({"error": "Invalid credentials"}), 401
 
-    # 🔥 CREA JWT
     payload = {
         "username": user.username,
         "company_name": user.company_name,
@@ -60,6 +59,9 @@ def login():
     }
 
     token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
 
     return jsonify({
         "status": "Login successful",
@@ -83,6 +85,7 @@ def test_db():
 def add_reading():
     data = request.get_json()
     username = data.get("username")
+    qr_code = data.get("qr_code")
 
     # Timestamp MySQL safe
     try:
@@ -105,7 +108,7 @@ def add_reading():
             operator_name VARCHAR(50),
             device_name VARCHAR(50),
             timestamp DATETIME,
-            bluetooth_value DOUBLE PRECISION,
+            read_value DOUBLE PRECISION,
             effective_temperature DOUBLE PRECISION,
             qr_code VARCHAR(100),
             desired_temperature VARCHAR(20),
@@ -120,8 +123,9 @@ def add_reading():
     db.session.execute(text(create_table_sql))
     db.session.commit()
 
+    # 🔥 VALORI DA INSERIRE (DINAMICI)
     fields = [
-        "operator_name", "device_name", "timestamp", "bluetooth_value",
+        "operator_name", "device_name", "timestamp", "read_value",
         "effective_temperature", "qr_code", "desired_temperature",
         "item_id", "label_datetime", "latitude", "longitude", "province"
     ]
@@ -129,7 +133,11 @@ def add_reading():
     values = {}
     for f in fields:
         val = data.get(f)
-        values[f] = val if val not in [None, "", " "] else "Unknown"
+
+        if f in ["read_value", "effective_temperature", "latitude", "longitude"]:
+            values[f] = float(val) if val not in [None, "", " "] else None
+        else:
+            values[f] = val if val not in [None, "", " "] else "Unknown"
 
     placeholders = ", ".join([f":{f}" for f in fields])
     insert_sql = text(f"INSERT INTO {table_name} ({', '.join(fields)}) VALUES ({placeholders})")
@@ -137,11 +145,10 @@ def add_reading():
     db.session.commit()
 
     return jsonify({
-        "status": "✅ Data inserted",
+        "status": "ok",
         "company": user.company_name,
         "operator": user.operator
     }), 200
-
 
 # ------------------ GET READINGS ------------------
 @app.route("/get_readings", methods=["POST"])
