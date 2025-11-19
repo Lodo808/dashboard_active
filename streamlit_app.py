@@ -160,7 +160,7 @@ df = df.rename(columns={
     "operator_name": "Operator",
     "device_name": "Device",
     "timestamp": "Reading date",
-    "bluetooth_value": "Read value",
+    "read_value": "Read value",
     "effective_temperature": "Effective T",
     "qr_code": "QR",
     "desired_temperature": "Desired T",
