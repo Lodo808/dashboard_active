@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import mysql.connector
 import jwt
+import requests
+import time
 
 import folium
 from folium.plugins import AntPath
@@ -18,6 +20,8 @@ from openai import OpenAI
 # -----------------------------------------------------------
 
 st.set_page_config(page_title="Dashboard Activelabel", layout="wide")
+
+# CSS Globale
 st.markdown("""
     <style>
         /* Sfondo principale e contenitori */
@@ -25,16 +29,13 @@ st.markdown("""
             background-color: white !important;
             color: black !important;
         }
-
         /* Testo e componenti principali */
         [data-testid="stHeader"], [data-testid="stToolbar"] {
             background-color: white !important;
         }
-
         [data-testid="stSidebar"], section[data-testid="stSidebar"] {
             background-color: #f8f9fa !important;
         }
-
         /* Tabelle e widget */
         div[data-testid="stDataFrame"] {
             background-color: white !important;
@@ -42,79 +43,136 @@ st.markdown("""
         div[data-testid="stDataFrame"] * {
             color: black !important;
         }
-
         /* Metriche e card */
         div[data-testid="stMetric"] {
             background-color: #f8f9fa !important;
             color: #2E4053 !important;
         }
-
         /* Rimuove eventuale overlay scuro del tema */
         [class*="st-emotion-cache"] {
             background-color: white !important;
             color: black !important;
         }
+        div[data-testid="stDataFrame"] table {
+            border-radius: 10px;
+            border: 1px solid #ddd;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        thead tr th {
+            background-color: #f4f6f8 !important;
+            color: #2E4053 !important;
+            font-weight: bold !important;
+        }
     </style>
 """, unsafe_allow_html=True)
 
+# -----------------------------------------------------------
+# GESTIONE SESSIONE E LOGIN
+# -----------------------------------------------------------
+
+# URL del Backend (Cloud Run) - Assicurati che sia corretto
+BACKEND_URL = "https://activecolor-backend-263743908793.europe-west8.run.app"
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.username = None
+    st.session_state.company = None
+    st.session_state.operator = None
+
+
+def login_user(username, password):
+    """Chiama il backend per verificare le credenziali"""
+    try:
+        payload = {"username": username, "password": password}
+        response = requests.post(f"{BACKEND_URL}/login", json=payload, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+            # Il backend ritorna username, token, operator, company_name
+            return True, data
+        else:
+            return False, response.text
+    except Exception as e:
+        return False, str(e)
+
+
+def logout():
+    st.session_state.logged_in = False
+    st.session_state.username = None
+    st.session_state.company = None
+    st.session_state.operator = None
+    st.rerun()
+
+
+# -----------------------------------------------------------
+# SCHERMATA DI LOGIN
+# -----------------------------------------------------------
+
+if not st.session_state.logged_in:
+    col1, col2, col3 = st.columns([1, 2, 1])
+
+    with col2:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        # Mostra il logo se presente
+        try:
+            st.image("logo.png", width=200)
+        except:
+            st.header("ActiveLabel Dashboard")
+
+        st.subheader("Accedi alla tua area riservata")
+
+        with st.form("login_form"):
+            username_input = st.text_input("Username")
+            password_input = st.text_input("Password", type="password")
+            submit_btn = st.form_submit_button("Login", type="primary")
+
+            if submit_btn:
+                if username_input and password_input:
+                    with st.spinner("Verifica credenziali..."):
+                        success, result = login_user(username_input, password_input)
+
+                        if success:
+                            st.session_state.logged_in = True
+                            st.session_state.username = result.get("username")
+                            st.session_state.company = result.get("company_name")
+                            st.session_state.operator = result.get("operator")
+                            st.success("Login effettuato!")
+                            time.sleep(0.5)
+                            st.rerun()
+                        else:
+                            st.error(f"Errore di login: Credenziali non valide o server non raggiungibile.")
+                else:
+                    st.warning("Inserisci username e password.")
+
+    # Blocca l'esecuzione qui se non loggato
+    st.stop()
+
+# -----------------------------------------------------------
+# DASHBOARD PRINCIPALE (Eseguita solo se Loggato)
+# -----------------------------------------------------------
+
+# Sidebar Logout e Info Utente
+with st.sidebar:
+    st.image("logo.png", width=150)
+    st.success(f"👤 {st.session_state.username}")
+    st.info(f"🏢 {st.session_state.company}")
+    if st.button("Esci / Logout"):
+        logout()
+
+# Header Dashboard
 col1, col2 = st.columns([1, 4])
-with col1:
-    st.image("logo.png", width=250)
 with col2:
     st.markdown(
         """
-        <div style='display: flex; align-items: center; height: 100%; padding-top: 45px;'>
-            <h1 style='font-size: 60px; margin: 0;'>Dashboard Activelabel</h1>
+        <div style='display: flex; align-items: center; height: 100%; padding-top: 20px;'>
+            <h1 style='font-size: 50px; margin: 0;'>Dashboard Activelabel</h1>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-st.markdown("""
-<style>
-div[data-testid="stDataFrame"] table {
-    border-radius: 10px;
-    border: 1px solid #ddd;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-}
-thead tr th {
-    background-color: #f4f6f8 !important;
-    color: #2E4053 !important;
-    font-weight: bold !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# -----------------------------------------------------------
-# AUTENTICAZIONE JWT (TOKEN DALL’APP)
-# -----------------------------------------------------------
-
-JWT_SECRET = os.getenv("JWT_SECRET")
-
-token = st.query_params.get("token")
-if isinstance(token, list):
-    token = token[0]
-
-if not token:
-    st.error("❌ Access denied: missing ?token=")
-    st.stop()
-
-if not JWT_SECRET:
-    st.error("❌ Server error: missing JWT_SECRET env variable")
-    st.stop()
-
-try:
-    decoded = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-except Exception as e:
-    st.error(f"❌ Invalid token: {e}")
-    st.stop()
-
-USERNAME = decoded["username"]
-COMPANY = decoded["company_name"]
-OPERATOR = decoded["operator"]
-
-st.sidebar.success(f"👤 User: {USERNAME}")
-st.sidebar.info(f"🏢 Company: {COMPANY}")
+# Recupero dati sessione
+COMPANY = st.session_state.company
 
 # -----------------------------------------------------------
 # COSTRUZIONE NOME TABELLA AZIENDALE
@@ -148,8 +206,14 @@ try:
     if "freshness_index" in df.columns:
         df["freshness_index"] = pd.to_numeric(df["freshness_index"], errors="coerce")
 
+    conn.close()  # Buona pratica chiudere la connessione dopo la lettura
+
 except Exception as e:
     st.error(f"❌ Errore nel caricamento dati da Cloud SQL: {e}")
+    st.stop()
+
+if df.empty:
+    st.warning("Nessun dato trovato per questa azienda.")
     st.stop()
 
 # -----------------------------------------------------------
@@ -257,8 +321,8 @@ def assegna_prodotto_e_scadenza(df_in: pd.DataFrame) -> pd.DataFrame:
     return df_local
 
 
-with st.spinner("⏳ Calcolo colonne aggiuntive in corso..."):
-    df = assegna_prodotto_e_scadenza(df)
+# Calcolo colonne extra
+df = assegna_prodotto_e_scadenza(df)
 
 if "Days left" in df.columns:
     df["Days left"] = pd.to_numeric(df["Days left"], errors="coerce")
@@ -280,7 +344,6 @@ def _expiry_factor_from_days(g, initial_shelf_life):
 
 
 def _is_missing_scalar(v):
-    # Gestione sicura anche se per errore arriva una Series
     if isinstance(v, pd.Series):
         return v.isna().all()
     if v is None:
@@ -295,7 +358,6 @@ def calcola_indice_freschezza(row):
     t_eff = row.get("Effective T", None)
     t_des = row.get("Desired T", None)
 
-    # Se valori mancanti → assegna 0 (mai più errore di ambiguità)
     if _is_missing_scalar(t_eff) or _is_missing_scalar(t_des):
         return 0.0
 
@@ -372,29 +434,6 @@ st.markdown("""
             letter-spacing: 1px;
             margin-top: 10px;
             margin-bottom: 30px;
-        }
-        div[data-testid="stMetric"] {
-            background-color: #f8f9fa;
-            border-radius: 18px;
-            padding: 20px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-            text-align: center;
-            transition: all 0.2s ease-in-out;
-        }
-        div[data-testid="stMetric"]:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 8px 20px rgba(0,0,0,0.15);
-        }
-        @media (max-width: 900px) {
-            div[data-testid="column"] {
-                flex: 1 1 50% !important;
-                min-width: 240px !important;
-            }
-        }
-        @media (max-width: 600px) {
-            div[data-testid="column"] {
-                flex: 1 1 100% !important;
-            }
         }
     </style>
     <div class="snapshot-title">🚦 Executive Snapshot</div>
@@ -550,11 +589,13 @@ if not map_data.empty and "LAT" in map_data.columns and "LON" in map_data.column
             tiles="cartodbdarkmatter"
         )
 
+
         def get_color(freshness):
             if pd.isna(freshness): return "grey"
             if freshness >= 80: return "green"
             if freshness >= 50: return "orange"
             return "red"
+
 
         for _, row in map_data_valid.iterrows():
             data_txt = ""
@@ -634,9 +675,9 @@ first_scans = first_scans.rename(columns={"Reading date": "First Scan Date"})
 
 last_scans = (
     df.sort_values("Reading date")
-      .groupby("QR")
-      .tail(1)
-      .copy()
+    .groupby("QR")
+    .tail(1)
+    .copy()
 )
 
 last_scans = pd.merge(last_scans, first_scans, on="QR", how="left")
@@ -682,6 +723,7 @@ st.dataframe(
     }
 )
 
+
 # -----------------------------------------------------------
 # CO2 / DISTANZE
 # -----------------------------------------------------------
@@ -703,8 +745,8 @@ for operator, group_op in df.groupby("Operator"):
     coords = list(zip(group_op["LAT"], group_op["LON"]))
 
     for i in range(1, len(coords)):
-        if all(not pd.isna(x) for x in (*coords[i-1], *coords[i])):
-            total_dist += haversine(coords[i-1][0], coords[i-1][1], coords[i][0], coords[i][1])
+        if all(not pd.isna(x) for x in (*coords[i - 1], *coords[i])):
+            total_dist += haversine(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1])
 
     qrs = group_op["QR"].dropna().unique()
     distances.append({
@@ -734,13 +776,21 @@ else:
 
 selected_qr_filter = c2.multiselect("🔢 QR Code", qrs_filtrabili, help="Filter by QR code")
 
-min_dist, max_dist = float(df_distance["Distance_km"].min()), float(df_distance["Distance_km"].max())
+if not df_distance.empty:
+    min_dist, max_dist = float(df_distance["Distance_km"].min()), float(df_distance["Distance_km"].max())
 
-if min_dist < max_dist:
-    selected_distance = c3.slider("🚚 Distance (km)", min_dist, max_dist, (min_dist, max_dist))
+    if min_dist < max_dist:
+        selected_distance = c3.slider("🚚 Distance (km)", min_dist, max_dist, (min_dist, max_dist))
+    else:
+        # Se c'è un solo valore o min == max
+        selected_distance = (min_dist, max_dist)
+        if len(df_distance) > 0:
+            c3.info(f"Distanza fissa: {min_dist:.2f} km")
+        else:
+            c3.info("Nessun dato distanza.")
 else:
-    c3.info("Filtro distanza non disponibile (dati insufficienti).")
-    selected_distance = (min_dist, max_dist)
+    selected_distance = (0.0, 0.0)
+    c3.info("Nessun dato distanza disponibile.")
 
 tipo = st.selectbox("Transport type", ["Car", "Truck", "Refrigerated Truck"], index=0)
 fattori = {"Car": 0.12, "Truck": 0.6, "Refrigerated Truck": 0.9}
@@ -762,23 +812,29 @@ for _, row in df_distance.iterrows():
 
 df_emissioni = pd.DataFrame(expanded_rows)
 
-df_emissioni_filtered = df_emissioni.copy()
-if selected_operator:
-    df_emissioni_filtered = df_emissioni_filtered[df_emissioni_filtered["Operator"].isin(selected_operator)]
-if selected_qr_filter:
-    df_emissioni_filtered = df_emissioni_filtered[df_emissioni_filtered["QR"].isin(selected_qr_filter)]
-df_emissioni_filtered = df_emissioni_filtered[
-    df_emissioni_filtered["Distance_km"].between(*selected_distance)
-]
+if not df_emissioni.empty:
+    df_emissioni_filtered = df_emissioni.copy()
+    if selected_operator:
+        df_emissioni_filtered = df_emissioni_filtered[df_emissioni_filtered["Operator"].isin(selected_operator)]
+    if selected_qr_filter:
+        df_emissioni_filtered = df_emissioni_filtered[df_emissioni_filtered["QR"].isin(selected_qr_filter)]
 
-st.dataframe(
-    df_emissioni_filtered.sort_values("Emissions_CO2_kg", ascending=False),
-    use_container_width=True,
-    hide_index=True
-)
+    # Filtro distanza
+    df_emissioni_filtered = df_emissioni_filtered[
+        df_emissioni_filtered["Distance_km"].between(*selected_distance)
+    ]
 
-totale_co2 = df_emissioni_filtered["Emissions_CO2_kg"].sum()
-st.metric("Total estimated CO₂", f"{totale_co2:.2f} kg")
+    st.dataframe(
+        df_emissioni_filtered.sort_values("Emissions_CO2_kg", ascending=False),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    totale_co2 = df_emissioni_filtered["Emissions_CO2_kg"].sum()
+    st.metric("Total estimated CO₂", f"{totale_co2:.2f} kg")
+else:
+    st.info("Nessun dato sulle emissioni disponibile.")
+    totale_co2 = 0.0
 
 # -----------------------------------------------------------
 # AI ANALYST
